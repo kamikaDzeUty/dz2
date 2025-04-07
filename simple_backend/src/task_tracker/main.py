@@ -17,3 +17,5 @@ def update_task(task_id: int):
 @app.delete("/tasks/{task_id}")
 def delete_task(task_id: int):
     pass
+
+# Сервер запустился, всё файн 👍💕
