@@ -1,35 +1,38 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
-import json
-import os
+import requests
+
+BIN_ID = "67fa087c8561e97a50fde42f"
+API_KEY = "$2a$10$tYTx.93q4Cf9FyU7Xtx0fuAIOhwzun91X5GJ0jkt25HmDtqMqsjie"
+BASE_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
+HEADERS = {
+    "X-Master-Key": API_KEY,
+    "Content-Type": "application/json"
+}
 
 app = FastAPI()
-
-data_tasks = 'tasks.json'
 
 class Task(BaseModel):
     id: int
     name: str
     status: str
 
-class TaskStorage:
-    def __init__(self, filename: str):
-        self.filename = filename
+class CloudTaskStorage:
 
-    def load_tasks(self) -> List[Task]:
-        if not os.path.exists(self.filename):
+    @staticmethod
+    def load_tasks() -> List[Task]:
+        response = requests.get(BASE_URL, headers=HEADERS)
+        if response.status_code != 200:
             return []
-        with open(self.filename, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-            except json.JSONDecodeError:
-                return []
-        return [Task(**item) for item in data]
+        data = response.json()["record"]
+        tasks_data = data.get("tasks", [])
+        return [Task(**item) for item in tasks_data]
 
-    def save_tasks(self, tasks: List[Task]):
-        with open(self.filename, "w", encoding="utf-8") as f:
-            json.dump([task.dict() for task in tasks], f, indent=2, ensure_ascii=False)
+    @staticmethod
+    def save_tasks(tasks: List[Task]):
+        data = {"tasks": [task.dict() for task in tasks]}
+        requests.put(BASE_URL, headers=HEADERS, json=data)
 
     def get_all(self) -> List[Task]:
         return self.load_tasks()
@@ -60,7 +63,7 @@ class TaskStorage:
                 return True
         return False
 
-storage = TaskStorage(data_tasks)
+storage = CloudTaskStorage()
 
 @app.get("/tasks", response_model=List[Task])
 def get_tasks():
@@ -85,5 +88,4 @@ def delete_task(task_id: int):
     success = storage.delete_task(task_id)
     if not success:
         raise HTTPException(status_code=404, detail="Задача не найдена")
-    return 'Задача удалена'
-# Сервер запустился, всё файн 👍💕
+    return {"message": "Задача удалена"}
