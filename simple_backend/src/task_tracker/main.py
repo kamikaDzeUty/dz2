@@ -2,11 +2,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import requests
+from abc import ABC, abstractmethod
+
 
 # Настройки JSONBin
 BIN_ID = "67fa087c8561e97a50fde42f"
 API_KEY = "$2a$10$tYTx.93q4Cf9FyU7Xtx0fuAIOhwzun91X5GJ0jkt25HmDtqMqsjie"
-BASE_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
+JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
 HEADERS = {
     "X-Master-Key": API_KEY,
     "Content-Type": "application/json"
@@ -15,6 +17,12 @@ HEADERS = {
 # Настройки Cloudflare Workers AI
 CF_TOKEN = "JdABwfqNvOMh1u1l9Fi96DbGjTZZI6XpgB5cxo-P"
 ACCOUNT_ID = "a9061e0592798bdf20f49728102d1432"
+CF_MODEL = "@cf/meta/llama-3-8b-instruct"
+CF_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{CF_MODEL}"
+CF_HEADERS = {
+    "Authorization": f"Bearer {CF_TOKEN}",
+    "Content-Type": "application/json"
+}
 
 
 class Task(BaseModel):
@@ -23,47 +31,42 @@ class Task(BaseModel):
     status: str
 
 
-class CloudflareLLM:
-    def __init__(self, token: str, account_id: str):
-        self.token = token
-        self.account_id = account_id
-        self.model = "@cf/meta/llama-3-8b-instruct"
-        self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/run/{self.model}"
-        self.headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
-        }
+class BaseHTTPClient(ABC):
+    def __init__(self, base_url: str, headers: dict):
+        self.base_url = base_url
+        self.headers = headers
 
-    def generate_solution(self, task_text: str) -> str:
-        prompt = f"Объясни, как решить следующую задачу:\n{task_text}"
-        body = {
-            "messages": [
-                {"role": "system", "content": "Ты помощник, который решает простые задачи на русском языке"},
-                {"role": "user", "content": prompt}
-            ]
-        }
+    def _get(self):
+        return requests.get(self.base_url, headers=self.headers)
 
-        response = requests.post(self.base_url, headers=self.headers, json=body)
-        if response.status_code != 200:
-            raise Exception(f"Cloudflare AI Error: {response.status_code} {response.text}")
+    def _post(self, data: dict):
+        return requests.post(self.base_url, headers=self.headers, json=data)
 
-        result = response.json()
-        return result["result"]["response"]
+    def _put(self, data: dict):
+        return requests.put(self.base_url, headers=self.headers, json=data)
+
+    @abstractmethod
+    def describe(self):
+        pass
 
 
-class CloudTaskStorage:
-    @staticmethod
-    def load_tasks() -> List[Task]:
-        response = requests.get(BASE_URL, headers=HEADERS)
+class CloudTaskStorage(BaseHTTPClient):
+    def __init__(self):
+        super().__init__(JSONBIN_URL, HEADERS)
+
+    def describe(self):
+        return "Хранилище задач через JSONBin"
+
+    def load_tasks(self) -> List[Task]:
+        response = self._get()
         if response.status_code != 200:
             return []
         data = response.json()["record"]
         return [Task(**item) for item in data.get("tasks", [])]
 
-    @staticmethod
-    def save_tasks(tasks: List[Task]):
+    def save_tasks(self, tasks: List[Task]):
         data = {"tasks": [task.dict() for task in tasks]}
-        requests.put(BASE_URL, headers=HEADERS, json=data)
+        self._put(data)
 
     def get_all(self) -> List[Task]:
         return self.load_tasks()
@@ -95,10 +98,32 @@ class CloudTaskStorage:
         return False
 
 
+class CloudflareLLM(BaseHTTPClient):
+    def __init__(self):
+        super().__init__(CF_URL, CF_HEADERS)
+
+    def describe(self):
+        return "LLM от Cloudflare Workers AI"
+
+    def generate_solution(self, task_text: str) -> str:
+        prompt = f"Объясни, как решить следующую задачу:\n{task_text}"
+        body = {
+            "messages": [
+                {"role": "system", "content": "Ты помощник, который решает простые задачи на русском языке"},
+                {"role": "user", "content": prompt}
+            ]
+        }
+
+        response = self._post(body)
+        if response.status_code != 200:
+            raise Exception(f"Cloudflare AI Error: {response.status_code} {response.text}")
+
+        result = response.json()
+        return result["result"]["response"]
+
 app = FastAPI()
 storage = CloudTaskStorage()
-llm = CloudflareLLM(CF_TOKEN, ACCOUNT_ID)
-
+llm = CloudflareLLM()
 
 @app.get("/tasks", response_model=List[Task])
 def get_tasks():
